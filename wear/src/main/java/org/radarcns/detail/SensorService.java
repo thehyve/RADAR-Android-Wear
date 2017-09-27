@@ -25,18 +25,21 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.os.BatteryManager;
-import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
 import android.os.StatFs;
-import android.support.annotation.Nullable;
 import android.util.Log;
 import android.widget.Toast;
+import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
 import com.google.android.gms.wearable.*;
 
 import java.io.*;
 import java.util.Arrays;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiConsumer;
 
 import static android.os.BatteryManager.BATTERY_STATUS_UNKNOWN;
 import static android.os.Environment.*;
@@ -46,10 +49,12 @@ public class SensorService extends Service implements SensorEventListener {
     private static final int BUFFER_SIZE = 100 * 1024;
     private static final int TYPE_BATTERY_STATUS = -1;
 
-    private GoogleApiClient googleApiClient;
     private File dataDirectory;
-    private File fileToWrite;
+    private volatile File fileToWrite;
     private DataOutputStream outputStream;
+
+    private Handler handler;
+    private ExecutorService executor;
 
     private final BroadcastReceiver batteryLevelReceiver = new BroadcastReceiver() {
         @Override
@@ -64,42 +69,25 @@ public class SensorService extends Service implements SensorEventListener {
     public void onCreate() {
         super.onCreate();
 
-        setupDataDirectory();
+        handler = new Handler();
 
-        googleApiClient = new GoogleApiClient.Builder(this)
-                        .addApi(Wearable.API)
-                        .addConnectionCallbacks(new GoogleApiClient.ConnectionCallbacks() {
-                            @Override
-                            public void onConnected(@Nullable Bundle bundle) {
-                                info("Connected to Google Play");
-                                whenConnectedToRadar(() -> {
-                                    makeForegroundService();
-                                    transferFiles(); // From the previous run
-                                    subscribeToSensorUpdates();
-                                });
-                            }
+        executor = Executors.newSingleThreadExecutor();
 
-                            @Override
-                            public void onConnectionSuspended(int cause) {
-                                String msg;
-                                switch (cause) {
-                                    case GoogleApiClient.ConnectionCallbacks.CAUSE_SERVICE_DISCONNECTED:
-                                        msg = "Service disconnected";
-                                        break;
-                                    case GoogleApiClient.ConnectionCallbacks.CAUSE_NETWORK_LOST:
-                                        msg = "Network lost";
-                                        break;
-                                    default:
-                                        msg = "(" + cause + ")";
-                                        break;
-                                }
-                                error("Connection to Google Play suspended: " + msg, null);
-                            }
-                        })
-                        .build();
+        executor.submit(() -> tryToConnectAndRun((googleApiClient, node) ->
+                handler.post(() -> init(googleApiClient, node))));
+    }
 
-        info("Connecting to Google Play services");
-        googleApiClient.connect();
+    private void init(GoogleApiClient googleApiClient, Node node) {
+        if (node != null) {
+            makeForegroundService();
+            setupDataDirectory();
+            subscribeToSensorUpdates();
+        } else {
+            handler.postDelayed(() -> {
+                stopSelf();
+                System.exit(0);
+            }, 10_000);
+        }
     }
 
     private void setupDataDirectory() {
@@ -195,7 +183,7 @@ public class SensorService extends Service implements SensorEventListener {
 
             if (fileToWrite.length() >= BUFFER_SIZE) {
                 closeActiveFile();
-                whenConnectedToRadar(this::transferFiles);
+                executor.submit(this::sendFiles);
             }
 
         } catch (IOException e) {
@@ -204,91 +192,93 @@ public class SensorService extends Service implements SensorEventListener {
     }
 
 
-    private void whenConnectedToRadar(Runnable action) {
-        info("Connecting to a RADAR device");
-        if (googleApiClient == null || !googleApiClient.isConnected()) {
-            return; // Stopping the service
-        }
-        Wearable.CapabilityApi.getCapability(googleApiClient, "radar_phone", CapabilityApi.FILTER_ALL).setResultCallback(result -> {
-            if (result.getStatus().isSuccess() && !result.getCapability().getNodes().isEmpty()) {
-                info("Connected to a RADAR device " + result.getCapability().getNodes().iterator().next().getDisplayName());
-                action.run();
-            } else {
-                if (result.getStatus().isSuccess()) {
-                    error("Cannot find a RADAR device", null);
-                } else {
-                    error("Cannot find a RADAR device: " + result.getStatus().getStatusMessage(), null);
-                }
-                CapabilityApi.CapabilityListener listener = new CapabilityApi.CapabilityListener() {
-                    @Override
-                    public void onCapabilityChanged(CapabilityInfo capabilityInfo) {
-                        if (!capabilityInfo.getNodes().isEmpty()) {
-                            info("Connected to a RADAR device " + capabilityInfo.getNodes().iterator().next().getDisplayName());
-                            Wearable.CapabilityApi.removeCapabilityListener(googleApiClient, this, "radar_phone");
-                            action.run();
-                        }
-                    }
-                };
-                Wearable.CapabilityApi.addCapabilityListener(googleApiClient, listener, "radar_phone");
-            }
-        }, 10, TimeUnit.SECONDS);
-    }
-
-
-    private void transferFiles() {
-        long start = System.currentTimeMillis();
-
+    private void sendFiles() {
         File[] files = dataDirectory.listFiles((dir, name) -> name.endsWith(".radar"));
 
         if (files.length == 0) {
             return;
         }
 
-        info("Sending data");
-        Arrays.sort(files);
+        tryToConnectAndRun((googleApiClient, node) -> {
+            if (node == null) {
+                return;
+            }
+
+            try {
+                info("Sending data");
+                Arrays.sort(files);
+
+                for (File file : files) {
+                    if (file == fileToWrite) {
+                        continue;
+                    }
+
+                    try (RandomAccessFile f = new RandomAccessFile(file, "r")) {
+                        byte[] bytes = new byte[(int) f.length()];
+                        f.readFully(bytes);
+                        Asset asset = Asset.createFromBytes(bytes);
+                        PutDataMapRequest dataMap = PutDataMapRequest.create("/radar-sensor-data/" + file.getName());
+                        dataMap.getDataMap().putAsset("data", asset);
+
+                        PutDataRequest request = dataMap.asPutDataRequest();
+                        DataApi.DataItemResult result = Wearable.DataApi.putDataItem(googleApiClient, request).await();
+
+                        if (result.getStatus().isSuccess()) {
+                            file.delete();
+                        } else {
+                            error("Error sending data. " + result.getStatus().getStatusMessage(), null);
+                        }
+                    }
+                }
+
+                info("Finished sending data");
+            } catch (IOException e) {
+                error("Error sending data", e);
+            }
+        });
+    }
+
+    private void tryToConnectAndRun(BiConsumer<GoogleApiClient, Node> action) {
+        info("Connecting to Google Play");
+
+        GoogleApiClient googleApiClient = new GoogleApiClient.Builder(this).addApi(Wearable.API).build();
 
         try {
-            for (File file : files) {
-                if (file == fileToWrite) {
-                    continue;
-                }
+            ConnectionResult connectionResult = googleApiClient.blockingConnect();
+            Node node = null;
 
-                try (RandomAccessFile f = new RandomAccessFile(file, "r")) {
-                    byte[] bytes = new byte[(int) f.length()];
-                    f.readFully(bytes);
-                    Asset asset = Asset.createFromBytes(bytes);
-                    PutDataMapRequest dataMap = PutDataMapRequest.create("/radar-sensor-data/" + file.getName());
-                    dataMap.getDataMap().putAsset("data", asset);
+            if (!connectionResult.isSuccess()) {
+                error("Cannot connect to Google Play" + connectionResult.getErrorMessage(), null);
+            } else {
+                info("Connected to Google Play. Connecting to a RADAR device");
 
-                    PutDataRequest request = dataMap.asPutDataRequest();
-                    Wearable.DataApi.putDataItem(googleApiClient, request)
-                            .setResultCallback(result -> {
-                                if (result.getStatus().isSuccess()) {
-                                    boolean isLast = file == files[files.length - 1];
-                                    if (isLast) {
-                                        info("Finished sending data");
+                CapabilityApi.GetCapabilityResult capabilityResult =
+                        Wearable.CapabilityApi.getCapability(googleApiClient, "radar_phone", CapabilityApi.FILTER_ALL).await();
 
-                                        long stop = System.currentTimeMillis();
-                                        Log.i(TAG, "File transfer took " + (stop - start) + " ms");
-                                    }
-                                    file.delete();
-                                } else {
-                                    error("Error sending data. " + result.getStatus().getStatusMessage(), null);
-                                }
-                            });
+                if (!capabilityResult.getStatus().isSuccess()) {
+                    error("Cannot find a RADAR device: " + capabilityResult.getStatus().getStatusMessage(), null);
+                } else if (capabilityResult.getCapability().getNodes().isEmpty()) {
+                    error("Cannot find a RADAR device", null);
+                } else {
+                    info("Found a RADAR device");
+                    node = capabilityResult.getCapability().getNodes().iterator().next();
                 }
             }
-        } catch (IOException e) {
-            error("Error sending data", e);
-        }
 
-        long stop = System.currentTimeMillis();
-        Log.i(TAG, "Time spent in the UI thread: " + (stop - start) + " ms");
+            action.accept(googleApiClient, node);
+        } finally {
+            if (googleApiClient.isConnected()) {
+                googleApiClient.disconnect();
+            }
+        }
     }
 
     @Override
     public void onDestroy() {
+        executor.shutdown();
+
         ((SensorManager) getSystemService(SENSOR_SERVICE)).unregisterListener(this);
+        unregisterReceiver(batteryLevelReceiver);
 
         try {
             closeActiveFile();
@@ -296,9 +286,11 @@ public class SensorService extends Service implements SensorEventListener {
             error("Error closing output file", e);
         }
 
-        unregisterReceiver(batteryLevelReceiver);
-
-        googleApiClient.disconnect();
+        try {
+            executor.awaitTermination(4, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            error("Error stopping the service", null);
+        }
 
         super.onDestroy();
     }
@@ -324,13 +316,13 @@ public class SensorService extends Service implements SensorEventListener {
 
     private void info(String message) {
         if (MainWearActivity.isActive()) {
-            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+            handler.post(() -> Toast.makeText(this, message, Toast.LENGTH_SHORT).show());
         }
         Log.i(TAG, message);
     }
 
     private void error(String message, Throwable e) {
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        handler.post(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
         if (e != null) {
             Log.e(TAG, message, e);
         } else {
