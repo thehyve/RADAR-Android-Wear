@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="org.radarcns.wear" >
+    <!--Listen for incoming and outgoing calls-->
+
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application android:allowBackup="true">
+        <service android:name=".WearSensorService"/>
+    </application>
+</manifest>
