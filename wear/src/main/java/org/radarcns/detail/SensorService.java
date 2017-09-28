@@ -258,7 +258,7 @@ public class SensorService extends Service implements SensorEventListener {
             Node node = null;
 
             if (!connectionResult.isSuccess()) {
-                error("Cannot connect to Google Play. " + connectionResult.getErrorMessage(), null);
+                error(withInfo("Cannot connect to Google Play", connectionResult.getErrorMessage()), null);
             } else {
                 info("Connected to Google Play. Connecting to a RADAR device");
 
@@ -266,7 +266,7 @@ public class SensorService extends Service implements SensorEventListener {
                         Wearable.CapabilityApi.getCapability(googleApiClient, "radar_phone", CapabilityApi.FILTER_ALL).await();
 
                 if (!capabilityResult.getStatus().isSuccess()) {
-                    error("Cannot find a RADAR device: " + capabilityResult.getStatus().getStatusMessage(), null);
+                    error(withInfo("Cannot find a RADAR device", capabilityResult.getStatus().getStatusMessage()), null);
                 } else if (capabilityResult.getCapability().getNodes().isEmpty()) {
                     error("Cannot find a RADAR device", null);
                 } else {
@@ -362,6 +362,10 @@ public class SensorService extends Service implements SensorEventListener {
         int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, BATTERY_STATUS_UNKNOWN);
 
         write(TYPE_BATTERY_STATUS, System.currentTimeMillis() / 1000.0, batteryPct, isPlugged, status);
+    }
+
+    private static String withInfo(String message, String info) {
+        return (info == null) ? message : message + ": " + info;
     }
 
     // Poor man's BiConsumer
