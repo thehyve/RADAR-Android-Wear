@@ -39,7 +39,6 @@ import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.function.BiConsumer;
 
 import static android.os.BatteryManager.BATTERY_STATUS_UNKNOWN;
 import static android.os.Environment.*;
@@ -56,14 +55,7 @@ public class SensorService extends Service implements SensorEventListener {
     private Handler handler;
     private ExecutorService executor;
 
-    private final BroadcastReceiver batteryLevelReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (intent.getAction().equals(Intent.ACTION_BATTERY_CHANGED)) {
-                processBatteryStatus(intent);
-            }
-        }
-    };
+    private BroadcastReceiver batteryLevelReceiver;
 
     @Override
     public void onCreate() {
@@ -81,6 +73,7 @@ public class SensorService extends Service implements SensorEventListener {
         if (node != null) {
             makeForegroundService();
             setupDataDirectory();
+            executor.submit(this::sendFiles);
             subscribeToSensorUpdates();
         } else {
             handler.postDelayed(() -> {
@@ -123,6 +116,15 @@ public class SensorService extends Service implements SensorEventListener {
                 info("Found " + sensor.getName());
             }
         }
+
+        batteryLevelReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent.getAction().equals(Intent.ACTION_BATTERY_CHANGED)) {
+                    processBatteryStatus(intent);
+                }
+            }
+        };
 
         processBatteryStatus(registerReceiver(batteryLevelReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED)));
     }
@@ -238,7 +240,7 @@ public class SensorService extends Service implements SensorEventListener {
         });
     }
 
-    private void tryToConnectAndRun(BiConsumer<GoogleApiClient, Node> action) {
+    private void tryToConnectAndRun(RadarAction action) {
         info("Connecting to Google Play");
 
         GoogleApiClient googleApiClient = new GoogleApiClient.Builder(this).addApi(Wearable.API).build();
@@ -248,7 +250,7 @@ public class SensorService extends Service implements SensorEventListener {
             Node node = null;
 
             if (!connectionResult.isSuccess()) {
-                error("Cannot connect to Google Play" + connectionResult.getErrorMessage(), null);
+                error("Cannot connect to Google Play. " + connectionResult.getErrorMessage(), null);
             } else {
                 info("Connected to Google Play. Connecting to a RADAR device");
 
@@ -265,7 +267,7 @@ public class SensorService extends Service implements SensorEventListener {
                 }
             }
 
-            action.accept(googleApiClient, node);
+            action.apply(googleApiClient, node);
         } finally {
             if (googleApiClient.isConnected()) {
                 googleApiClient.disconnect();
@@ -278,7 +280,9 @@ public class SensorService extends Service implements SensorEventListener {
         executor.shutdown();
 
         ((SensorManager) getSystemService(SENSOR_SERVICE)).unregisterListener(this);
-        unregisterReceiver(batteryLevelReceiver);
+        if (batteryLevelReceiver != null) {
+            unregisterReceiver(batteryLevelReceiver);
+        }
 
         try {
             closeActiveFile();
@@ -350,5 +354,11 @@ public class SensorService extends Service implements SensorEventListener {
         int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, BATTERY_STATUS_UNKNOWN);
 
         write(TYPE_BATTERY_STATUS, 0, System.currentTimeMillis() / 1000.0, batteryPct, isPlugged, status);
+    }
+
+    // Poor man's BiConsumer
+    @FunctionalInterface
+    private interface RadarAction {
+        void apply(GoogleApiClient googleApiClient, Node node);
     }
 }
