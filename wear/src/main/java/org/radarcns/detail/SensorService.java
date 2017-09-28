@@ -28,6 +28,7 @@ import android.os.BatteryManager;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.StatFs;
+import android.support.v4.content.LocalBroadcastManager;
 import android.util.Log;
 import android.widget.Toast;
 import com.google.android.gms.common.ConnectionResult;
@@ -45,7 +46,7 @@ import static android.os.Environment.*;
 
 public class SensorService extends Service implements SensorEventListener {
     private static final String TAG = SensorService.class.getSimpleName();
-    private static final int BUFFER_SIZE = 100 * 1024;
+    private static final int BUFFER_SIZE = 1024 * 1024;
     private static final int TYPE_BATTERY_STATUS = -1;
 
     private File dataDirectory;
@@ -65,22 +66,25 @@ public class SensorService extends Service implements SensorEventListener {
 
         executor = Executors.newSingleThreadExecutor();
 
-        executor.submit(() -> tryToConnectAndRun((googleApiClient, node) ->
-                handler.post(() -> init(googleApiClient, node))));
+        executor.submit(() -> tryToConnectAndRun((googleApiClient, node) -> {
+            if (node != null) {
+                handler.post(this::init);
+            } else {
+                handler.postDelayed(this::closeApp, 10_000); // Gives the user some time to read the notifications
+            }
+        }));
     }
 
-    private void init(GoogleApiClient googleApiClient, Node node) {
-        if (node != null) {
-            makeForegroundService();
-            setupDataDirectory();
-            executor.submit(this::sendFiles);
-            subscribeToSensorUpdates();
-        } else {
-            handler.postDelayed(() -> {
-                stopSelf();
-                System.exit(0);
-            }, 10_000);
-        }
+    private void init() {
+        makeForegroundService();
+        setupDataDirectory();
+        executor.submit(this::sendFiles);
+        subscribeToSensorUpdates();
+    }
+
+    private void closeApp() {
+        LocalBroadcastManager.getInstance(this).sendBroadcast(
+                new Intent(this, MainWearActivity.class).setAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
     }
 
     private void setupDataDirectory() {
@@ -156,14 +160,14 @@ public class SensorService extends Service implements SensorEventListener {
 
     @Override
     public void onSensorChanged(final SensorEvent event) {
-        write(event.sensor.getType(), event.accuracy, eventTimestampToSecondsUTC(event.timestamp), event.values);
+        write(event.sensor.getType(), eventTimestampToSecondsUTC(event.timestamp), event.values);
     }
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
     }
 
-    private void write(int type, int accuracy, double timestamp, float... values) {
+    private void write(int type, double timestamp, float... values) {
         try {
             if (outputStream == null) {
                 if (fileToWrite == null) {
@@ -174,14 +178,16 @@ public class SensorService extends Service implements SensorEventListener {
             }
 
             outputStream.writeInt(type);
-            outputStream.writeInt(accuracy);
             outputStream.writeDouble(timestamp);
             outputStream.writeInt(values.length);
             for (float x : values) {
                 outputStream.writeFloat(x);
             }
 
-            outputStream.flush();
+            int hash = Arrays.deepHashCode(new Object[]{type, timestamp, values.length, values});
+            outputStream.write(hash);
+
+            outputStream.flush(); // after every message
 
             if (fileToWrite.length() >= BUFFER_SIZE) {
                 closeActiveFile();
@@ -214,22 +220,24 @@ public class SensorService extends Service implements SensorEventListener {
                     if (file == fileToWrite) {
                         continue;
                     }
+                    byte[] bytes = new byte[(int) file.length()];
 
                     try (RandomAccessFile f = new RandomAccessFile(file, "r")) {
-                        byte[] bytes = new byte[(int) f.length()];
                         f.readFully(bytes);
-                        Asset asset = Asset.createFromBytes(bytes);
-                        PutDataMapRequest dataMap = PutDataMapRequest.create("/radar-sensor-data/" + file.getName());
-                        dataMap.getDataMap().putAsset("data", asset);
+                    }
+                    Asset asset = Asset.createFromBytes(bytes);
+                    PutDataMapRequest dataMap = PutDataMapRequest.create("/radar-sensor-data/" + file.getName());
+                    dataMap.getDataMap().putAsset("data", asset);
 
-                        PutDataRequest request = dataMap.asPutDataRequest();
-                        DataApi.DataItemResult result = Wearable.DataApi.putDataItem(googleApiClient, request).await();
+                    PutDataRequest request = dataMap.asPutDataRequest();
+                    DataApi.DataItemResult result = Wearable.DataApi.putDataItem(googleApiClient, request).await();
 
-                        if (result.getStatus().isSuccess()) {
-                            file.delete();
-                        } else {
-                            error("Error sending data. " + result.getStatus().getStatusMessage(), null);
+                    if (result.getStatus().isSuccess()) {
+                        if (!file.delete()) {
+                            error("Error deleting backup files. Please contact the support team.", null);
                         }
+                    } else {
+                        error("Error sending data. " + result.getStatus().getStatusMessage(), null);
                     }
                 }
 
@@ -353,7 +361,7 @@ public class SensorService extends Service implements SensorEventListener {
         int isPlugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
         int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, BATTERY_STATUS_UNKNOWN);
 
-        write(TYPE_BATTERY_STATUS, 0, System.currentTimeMillis() / 1000.0, batteryPct, isPlugged, status);
+        write(TYPE_BATTERY_STATUS, System.currentTimeMillis() / 1000.0, batteryPct, isPlugged, status);
     }
 
     // Poor man's BiConsumer

@@ -39,6 +39,7 @@ import org.slf4j.LoggerFactory;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Arrays;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -157,12 +158,18 @@ public class WearSensorManager extends AbstractDeviceManager<WearSensorService, 
              DataInputStream in = new DataInputStream(assetInputStream)) {
             while (in.available() > 0) {
                 int sensorType = in.readInt();
-                int accuracy = in.readInt();
                 double timestamp = in.readDouble();
                 int valuesCount = in.readInt();
                 float[] values = new float[valuesCount];
                 for (int i = 0; i < valuesCount; i++) {
                     values[i] = in.readFloat();
+                }
+                int hash = in.readInt();
+                int expectedHash = Arrays.deepHashCode(new Object[] {sensorType, timestamp, values.length, values});
+
+                if (hash != expectedHash) {
+                    logger.error("Data is corrupted");
+                    break;
                 }
 
                 switch (sensorType) {

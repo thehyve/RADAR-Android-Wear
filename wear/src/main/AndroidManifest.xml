@@ -40,7 +40,8 @@
         <activity
                 android:name=".MainWearActivity"
                 android:label="RADAR"
-                android:theme="@android:style/Theme.DeviceDefault.Light">
+                android:theme="@android:style/Theme.DeviceDefault.Light"
+                android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>

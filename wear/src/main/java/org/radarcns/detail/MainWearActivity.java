@@ -17,13 +17,23 @@
 package org.radarcns.detail;
 
 import android.app.AlertDialog;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.Bundle;
+import android.support.v4.content.LocalBroadcastManager;
 import android.support.wearable.activity.WearableActivity;
 import android.view.View;
 
 public class MainWearActivity extends WearableActivity {
     private static volatile boolean active;
+    private final BroadcastReceiver suicidalBroadcastReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            finishAffinity();
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -33,8 +43,18 @@ public class MainWearActivity extends WearableActivity {
         setAmbientEnabled();
 
         startService(new Intent(this, SensorService.class));
+
+        LocalBroadcastManager.getInstance(this).registerReceiver(suicidalBroadcastReceiver,
+                new IntentFilter(Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
     }
 
+    @Override
+    protected void onDestroy() {
+        stopService(new Intent(this, SensorService.class));
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(suicidalBroadcastReceiver);
+
+        super.onDestroy();
+    }
 
     @Override
     protected void onResume() {
@@ -56,12 +76,8 @@ public class MainWearActivity extends WearableActivity {
         new AlertDialog.Builder(this)
                 .setIcon(R.mipmap.ic_launcher)
                 .setMessage("Close RADAR?")
-                .setPositiveButton("OK", (d, w) -> {
-                    stopService(new Intent(this, SensorService.class));
-                    finish();
-                })
+                .setPositiveButton("Close", (d, w) -> finish())
                 .setNegativeButton("Cancel", (d, w) -> {})
                 .show();
-
     }
 }
