@@ -47,6 +47,8 @@ import static android.os.Environment.*;
 public class SensorService extends Service implements SensorEventListener {
     private static final String TAG = SensorService.class.getSimpleName();
     private static final int BUFFER_SIZE = 1024 * 1024;
+    private static final int MAX_FILES = 200;
+    private static final int MIN_FREE_SPACE = 100 * 1024 * 1024;
     private static final int TYPE_BATTERY_STATUS = -1;
 
     private File dataDirectory;
@@ -57,6 +59,7 @@ public class SensorService extends Service implements SensorEventListener {
     private ExecutorService executor;
 
     private BroadcastReceiver batteryLevelReceiver;
+    private Toast lastInfoToast;
 
     @Override
     public void onCreate() {
@@ -70,7 +73,7 @@ public class SensorService extends Service implements SensorEventListener {
             if (node != null) {
                 handler.post(this::init);
             } else {
-                handler.postDelayed(this::closeApp, 10_000); // Gives the user some time to read the notifications
+                handler.post(() -> closeApp("Couldn't connect to RADAR phone app. Try again later."));
             }
         }));
     }
@@ -82,9 +85,11 @@ public class SensorService extends Service implements SensorEventListener {
         subscribeToSensorUpdates();
     }
 
-    private void closeApp() {
+    private void closeApp(String message) {
         LocalBroadcastManager.getInstance(this).sendBroadcast(
-                new Intent(this, MainWearActivity.class).setAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
+                new Intent(this, MainWearActivity.class)
+                        .setAction(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
+                        .putExtra("message", message));
     }
 
     private void setupDataDirectory() {
@@ -112,14 +117,16 @@ public class SensorService extends Service implements SensorEventListener {
 
     private void subscribeToSensorUpdates() {
         info("Discovering sensors");
+        StringBuilder builder = new StringBuilder("Found sensors:\n");
         SensorManager sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         for (Sensor sensor : sensorManager.getSensorList(Sensor.TYPE_ALL)) {
             long interval = updateInterval(sensor);
             if (interval > 0) {
                 sensorManager.registerListener(this, sensor, (int) TimeUnit.SECONDS.toMicros(interval));
-                info("Found " + sensor.getName());
+                builder.append(sensor.getName()).append('\n');
             }
         }
+        info(builder.toString());
 
         batteryLevelReceiver = new BroadcastReceiver() {
             @Override
@@ -209,6 +216,10 @@ public class SensorService extends Service implements SensorEventListener {
 
         tryToConnectAndRun((googleApiClient, node) -> {
             if (node == null) {
+                if (files.length >= MAX_FILES || availableSpace(dataDirectory) < MIN_FREE_SPACE) {
+                    stopSelf();
+                    closeApp("Closing the app to prevent data storage overflow");
+                }
                 return;
             }
 
@@ -328,13 +339,23 @@ public class SensorService extends Service implements SensorEventListener {
 
     private void info(String message) {
         if (MainWearActivity.isActive()) {
-            handler.post(() -> Toast.makeText(this, message, Toast.LENGTH_SHORT).show());
+            handler.post(() -> {
+                lastInfoToast = Toast.makeText(this, message, Toast.LENGTH_SHORT);
+                lastInfoToast.show();
+
+            });
         }
         Log.i(TAG, message);
     }
 
     private void error(String message, Throwable e) {
-        handler.post(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
+        handler.post(() -> {
+            if (lastInfoToast != null) {
+                lastInfoToast.cancel();
+                lastInfoToast = null;
+            }
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        });
         if (e != null) {
             Log.e(TAG, message, e);
         } else {

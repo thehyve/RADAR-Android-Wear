@@ -28,10 +28,11 @@ import android.view.View;
 
 public class MainWearActivity extends WearableActivity {
     private static volatile boolean active;
+
     private final BroadcastReceiver suicidalBroadcastReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            finishAffinity();
+            notifyAndClose(intent.getStringExtra("message"));
         }
     };
 
@@ -75,9 +76,20 @@ public class MainWearActivity extends WearableActivity {
     public void onClick(View view) {
         new AlertDialog.Builder(this)
                 .setIcon(R.mipmap.ic_launcher)
-                .setMessage("Close RADAR?")
-                .setPositiveButton("Close", (d, w) -> finish())
+                .setMessage("Do you really want to close RADAR?")
+                .setPositiveButton("Close", (d, w) -> finishAffinity())
                 .setNegativeButton("Cancel", (d, w) -> {})
+                .show();
+    }
+
+    private void notifyAndClose(String message) {
+        new AlertDialog.Builder(this)
+                .setIcon(R.mipmap.ic_launcher)
+                .setTitle("RADAR app will be closed")
+                .setMessage(message)
+                .setPositiveButton("OK", (d, w) -> finishAffinity())
+                .setOnDismissListener(d -> finishAffinity())
+                .setOnCancelListener(d -> finishAffinity())
                 .show();
     }
 }
