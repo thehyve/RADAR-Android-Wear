@@ -16,55 +16,21 @@
 
 package org.radarcns.wear;
 
-import org.apache.avro.specific.SpecificRecord;
-import org.radarcns.android.RadarConfiguration;
-import org.radarcns.android.device.BaseDeviceState;
 import org.radarcns.android.device.DeviceService;
-import org.radarcns.key.MeasurementKey;
-import org.radarcns.topic.AvroTopic;
-
-import java.util.Arrays;
-import java.util.List;
-
-import static org.radarcns.android.RadarConfiguration.SOURCE_ID_KEY;
 
 /**
  * A service that manages the phone sensor manager and a TableDataHandler to send store the data of
  * the phone sensors and send it to a Kafka REST proxy.
  */
-public class WearSensorService extends DeviceService {
-    private String sourceId;
+public class WearSensorService extends DeviceService<WearState> {
 
     @Override
     protected WearSensorManager createDeviceManager() {
-        return new WearSensorManager(this, getDataHandler(), getUserId(), getSourceId());
+        return new WearSensorManager(this);
     }
 
     @Override
-    protected BaseDeviceState getDefaultState() {
+    protected WearState getDefaultState() {
         return new WearState();
-    }
-
-    @Override
-    protected WearSensorTopics getTopics() {
-        return WearSensorTopics.getInstance();
-    }
-
-    @Override
-    protected List<AvroTopic<MeasurementKey, ? extends SpecificRecord>> getCachedTopics() {
-        return Arrays.<AvroTopic<MeasurementKey, ? extends SpecificRecord>>asList(
-                 getTopics().getAccelerationTopic()
-                ,getTopics().getLightTopic()
-                ,getTopics().getGyroscopeTopic()
-                ,getTopics().getMagneticFieldTopic()
-                ,getTopics().getStepCountTopic()
-        );
-    }
-
-    public String getSourceId() {
-        if (sourceId == null) {
-            sourceId = RadarConfiguration.getOrSetUUID(getApplicationContext(), SOURCE_ID_KEY);
-        }
-        return sourceId;
     }
 }

@@ -17,6 +17,7 @@
 package org.radarcns.wear;
 
 import android.os.Parcelable;
+import android.support.annotation.NonNull;
 import org.radarcns.android.device.DeviceServiceProvider;
 
 import java.util.Collections;
@@ -41,5 +42,23 @@ public class WearSensorProvider extends DeviceServiceProvider<WearState> {
     @Override
     public List<String> needsPermissions() {
         return Collections.emptyList();
+    }
+
+    @NonNull
+    @Override
+    public String getDeviceProducer() {
+        return "";
+    }
+
+    @NonNull
+    @Override
+    public String getDeviceModel() {
+        return "Android Wear";
+    }
+
+    @NonNull
+    @Override
+    public String getVersion() {
+        return "";
     }
 }

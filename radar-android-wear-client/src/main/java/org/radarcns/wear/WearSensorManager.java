@@ -25,13 +25,11 @@ import android.util.SparseArray;
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
 import com.google.android.gms.wearable.*;
-import org.radarcns.android.data.DataCache;
-import org.radarcns.android.data.TableDataHandler;
 import org.radarcns.android.device.AbstractDeviceManager;
 import org.radarcns.android.device.DeviceManager;
 import org.radarcns.android.device.DeviceStatusListener;
-import org.radarcns.key.MeasurementKey;
-import org.radarcns.phone.*;
+import org.radarcns.kafka.ObservationKey;
+import org.radarcns.passive.phone.*;
 import org.radarcns.topic.AvroTopic;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,7 +45,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static android.os.BatteryManager.*;
 
-public class WearSensorManager extends AbstractDeviceManager<WearSensorService, WearState> implements DeviceManager, GoogleApiClient.ConnectionCallbacks, GoogleApiClient.OnConnectionFailedListener, DataApi.DataListener {
+public class WearSensorManager extends AbstractDeviceManager<WearSensorService, WearState>
+        implements GoogleApiClient.ConnectionCallbacks, GoogleApiClient.OnConnectionFailedListener, DataApi.DataListener {
     private static final Logger logger = LoggerFactory.getLogger(WearSensorManager.class);
     private static final int TYPE_BATTERY_STATUS = -1;
     private static final SparseArray<BatteryStatus> BATTERY_TYPES = new SparseArray<>(5);
@@ -60,26 +59,25 @@ public class WearSensorManager extends AbstractDeviceManager<WearSensorService, 
         BATTERY_TYPES.append(BATTERY_STATUS_FULL, BatteryStatus.FULL);
     }
 
-    private final DataCache<MeasurementKey, PhoneAcceleration> accelerationTable;
-    private final DataCache<MeasurementKey, PhoneLight> lightTable;
-    private final DataCache<MeasurementKey, PhoneStepCount> stepCountTable;
-    private final DataCache<MeasurementKey, PhoneGyroscope> gyroscopeTable;
-    private final DataCache<MeasurementKey, PhoneMagneticField> magneticFieldTable;
-    private final AvroTopic<MeasurementKey, PhoneBatteryLevel> batteryTopic;
+    private final AvroTopic<ObservationKey, PhoneAcceleration> accelerationTopic =
+            createTopic("android_wear_acceleration", PhoneAcceleration.class);
+    private final AvroTopic<ObservationKey, PhoneBatteryLevel> batteryLevelTopic =
+            createTopic("android_wear_battery_level", PhoneBatteryLevel.class);
+    private final AvroTopic<ObservationKey, PhoneLight> lightTopic =
+            createTopic("android_wear_light", PhoneLight.class);
+    private final AvroTopic<ObservationKey, PhoneStepCount> stepCountTopic =
+            createTopic("android_wear_step_count", PhoneStepCount.class);
+    private final AvroTopic<ObservationKey, PhoneGyroscope> gyroscopeTopic =
+            createTopic("android_wear_gyroscope", PhoneGyroscope.class);
+    private final AvroTopic<ObservationKey, PhoneMagneticField> magneticFieldTopic =
+            createTopic("android_wear_magnetic_field", PhoneMagneticField.class);
 
     private final AtomicInteger lastStepCount = new AtomicInteger(-1);
     private GoogleApiClient googleApiClient;
     private ExecutorService sender;
 
-    public WearSensorManager(WearSensorService context, TableDataHandler dataHandler, String groupId, String sourceId) {
-        super(context, new WearState(), dataHandler, groupId, sourceId);
-        WearSensorTopics topics = WearSensorTopics.getInstance();
-        this.accelerationTable = dataHandler.getCache(topics.getAccelerationTopic());
-        this.lightTable = dataHandler.getCache(topics.getLightTopic());
-        this.stepCountTable = dataHandler.getCache(topics.getStepCountTopic());
-        this.gyroscopeTable = dataHandler.getCache(topics.getGyroscopeTopic());
-        this.magneticFieldTable = dataHandler.getCache(topics.getMagneticFieldTopic());
-        this.batteryTopic = topics.getBatteryLevelTopic();
+    public WearSensorManager(WearSensorService context) {
+        super(context);
 
         setName("Wear");
 
@@ -211,7 +209,7 @@ public class WearSensorManager extends AbstractDeviceManager<WearSensorService, 
 
         double timeReceived = System.currentTimeMillis() / 1_000d;
 
-        send(accelerationTable, new PhoneAcceleration(timestamp, timeReceived, x, y, z));
+        send(accelerationTopic, new PhoneAcceleration(timestamp, timeReceived, x, y, z));
     }
 
     private void processLight(double timestamp, float[] values) {
@@ -220,7 +218,7 @@ public class WearSensorManager extends AbstractDeviceManager<WearSensorService, 
 
         double timeReceived = System.currentTimeMillis() / 1_000d;
 
-        send(lightTable, new PhoneLight(timestamp, timeReceived, lightValue));
+        send(lightTopic, new PhoneLight(timestamp, timeReceived, lightValue));
     }
 
     private void processGyroscope(double timestamp, float[] values) {
@@ -230,7 +228,7 @@ public class WearSensorManager extends AbstractDeviceManager<WearSensorService, 
         float axisZ = values[2];
 
         double timeReceived = System.currentTimeMillis() / 1_000d;
-        send(gyroscopeTable, new PhoneGyroscope(timestamp, timeReceived, axisX, axisY, axisZ));
+        send(gyroscopeTopic, new PhoneGyroscope(timestamp, timeReceived, axisX, axisY, axisZ));
     }
 
     private void processMagneticField(double timestamp, float[] values) {
@@ -241,7 +239,7 @@ public class WearSensorManager extends AbstractDeviceManager<WearSensorService, 
 
         double timeReceived = System.currentTimeMillis() / 1_000d;
 
-        send(magneticFieldTable, new PhoneMagneticField(timestamp, timeReceived, axisX, axisY, axisZ));
+        send(magneticFieldTopic, new PhoneMagneticField(timestamp, timeReceived, axisX, axisY, axisZ));
     }
 
     private void processStep(double timestamp, float[] values) {
@@ -261,7 +259,7 @@ public class WearSensorManager extends AbstractDeviceManager<WearSensorService, 
             stepsSinceLastUpdate = stepCount - lastStepCount.getAndSet(stepCount);
         }
 
-        send(stepCountTable, new PhoneStepCount(timestamp, timeReceived, stepsSinceLastUpdate));
+        send(stepCountTopic, new PhoneStepCount(timestamp, timeReceived, stepsSinceLastUpdate));
 
         logger.info("Steps taken: {}", stepsSinceLastUpdate);
     }
@@ -277,6 +275,6 @@ public class WearSensorManager extends AbstractDeviceManager<WearSensorService, 
 
         double timeReceived = System.currentTimeMillis() / 1000.0;
 
-        trySend(batteryTopic, 0L, new PhoneBatteryLevel(time, timeReceived, batteryPct, isPlugged, batteryStatus));
+        trySend(batteryLevelTopic, 0L, new PhoneBatteryLevel(time, timeReceived, batteryPct, isPlugged, batteryStatus));
     }
 }
